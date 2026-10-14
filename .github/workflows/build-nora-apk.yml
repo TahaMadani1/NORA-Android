@@ -3,52 +3,142 @@ name: Compiler NORA APK
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches:
+      - main
 
 permissions:
   contents: read
 
 jobs:
   build:
+    name: Compilation Android NORA
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
 
     steps:
-      - name: Recuperer le projet
+
+      # 1. Recuperer le projet
+      - name: Recuperer le projet NORA
         uses: actions/checkout@v4
 
-      - name: Installer Java
+      # 2. Installer Java 17
+      - name: Installer Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-          
-     - name: Installer Android 34
+
+      # 3. Installer Android SDK Command Line Tools
+      - name: Installer Android SDK
+        shell: bash
         run: |
-          SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | head -n 1)
-          if [ -z "$SDKMANAGER" ]; then
-            echo "Android SDK Manager introuvable"
-            exit 1
-          fi
-          yes | "$SDKMANAGER" --licenses >/dev/null || true
-          "$SDKMANAGER" "platforms;android-34" "build-tools;34.0.0"
-      - name: Installer Gradle
+          set -e
+
+          SDK_DIR="$RUNNER_TEMP/android-sdk"
+          TOOLS_DIR="$RUNNER_TEMP/android-tools"
+
+          mkdir -p "$SDK_DIR/cmdline-tools/latest"
+          mkdir -p "$TOOLS_DIR"
+
+          curl --fail --location --retry 3 \
+            --output "$RUNNER_TEMP/android-tools.zip" \
+            "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
+
+          unzip -q "$RUNNER_TEMP/android-tools.zip" \
+            -d "$TOOLS_DIR"
+
+          cp -a "$TOOLS_DIR/cmdline-tools/." \
+            "$SDK_DIR/cmdline-tools/latest/"
+
+          echo "ANDROID_HOME=$SDK_DIR" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_DIR" >> "$GITHUB_ENV"
+
+          echo "$SDK_DIR/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$SDK_DIR/platform-tools" >> "$GITHUB_PATH"
+
+          test -x "$SDK_DIR/cmdline-tools/latest/bin/sdkmanager"
+
+          echo "Android SDK Command Line Tools installe"
+
+      # 4. Installer Android API 34
+      - name: Installer Android API 34
+        shell: bash
+        run: |
+          set -e
+
+          yes | sdkmanager \
+            --sdk_root="$ANDROID_SDK_ROOT" \
+            --licenses > /dev/null || true
+
+          sdkmanager \
+            --sdk_root="$ANDROID_SDK_ROOT" \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0"
+
+          echo "Android API 34 installe"
+
+      # 5. Installer Gradle
+      - name: Installer Gradle 8.4
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.4'
 
-      - name: Extraire NORA
+      # 6. Extraire le projet NORA
+      - name: Extraire le projet Android
+        shell: bash
         run: |
-          mkdir android-project
-          unzip NORA_AndroidBuild_Projet_Corrige.zip -d android-project
+          set -e
 
-      - name: Compiler APK
+          mkdir -p android-project
+
+          unzip -q \
+            NORA_AndroidBuild_Projet_Corrige.zip \
+            -d android-project
+
+          echo "Verification du projet Android"
+
+          test -f android-project/settings.gradle
+          test -f android-project/build.gradle
+          test -f android-project/app/build.gradle
+          test -f android-project/app/src/main/AndroidManifest.xml
+
+          echo "Structure Gradle valide"
+
+      # 7. Compiler l'application
+      - name: Compiler NORA APK
         working-directory: android-project
-        run: gradle --no-daemon assembleDebug
+        shell: bash
+        run: |
+          set -e
 
-      - name: Publier APK
+          gradle \
+            --no-daemon \
+            --stacktrace \
+            assembleDebug
+
+      # 8. Verifier le fichier APK
+      - name: Verifier le fichier APK
+        shell: bash
+        run: |
+          set -e
+
+          APK="android-project/app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ ! -f "$APK" ]; then
+            echo "ERREUR : APK introuvable"
+            exit 1
+          fi
+
+          echo "APK genere avec succes"
+
+          ls -lh "$APK"
+
+      # 9. Publier l'APK
+      - name: Publier NORA APK
         uses: actions/upload-artifact@v4
         with:
-          name: NORA-APK
-          path: android-project/app/build/outputs/apk/debug/*.apk
+          name: NORA-Android-APK
+          path: android-project/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
           if-no-files-found: error
